@@ -9,10 +9,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Descompactar projeto
         run: |
-          ls -la
           Z=$(find . -iname "*.zip" | head -1)
-          echo "usando: $Z"
           unzip -q "$Z"
+      - name: Remover arquivos antigos
+        run: rm -f CodeInjector/app/src/main/java/com/dev/codeinjector/{CodeRunner,TermuxRunner,JavaRunner}.kt
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - uses: actions/setup-python@v5
