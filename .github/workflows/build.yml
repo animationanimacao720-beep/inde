@@ -7,14 +7,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: unzip -q CodeInjector-Python.zip
+      - name: Descompactar projeto
+        run: |
+          ls -la
+          Z=$(find . -iname "*.zip" | head -1)
+          echo "usando: $Z"
+          unzip -q "$Z"
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.9" }
-      - run: gradle assembleDebug --no-daemon
+      - name: Compilar
+        run: gradle assembleDebug --no-daemon
         working-directory: CodeInjector
       - uses: actions/upload-artifact@v4
         with:
