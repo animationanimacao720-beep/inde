@@ -1,34 +1,89 @@
-name: Build APK
+name: Build CodeInjector APK
+
 on:
   push:
   workflow_dispatch:
+  schedule:
+    - cron: '0 12 * * *' # Executa diariamente às 12:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeinjector-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Descompactar projeto
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Preparar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar Python 3.11 (Chaquopy)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar ferramentas
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Encontrar e extrair o projeto ZIP
+        id: source
+        shell: bash
         run: |
-          ls -la
-          rm -rf CodeInjector
-          Z=CodeInjector-Python.zip
-          [ -f "$Z" ] || Z=$(ls *.zip | head -1)
-          echo "usando: $Z"
-          unzip -qo "$Z"
-      - name: Remover arquivos antigos
-        run: |
-          rm -rf CodeInjector/app/src/main/res/xml
-          rm -f CodeInjector/app/src/main/java/com/dev/codeinjector/{CodeRunner,TermuxRunner,JavaRunner,TextInjectorService}.kt
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - uses: gradle/actions/setup-gradle@v4
-        with: { gradle-version: "8.9" }
-      - name: Compilar
-        run: gradle assembleDebug --no-daemon
-        working-directory: CodeInjector
-      - uses: actions/upload-artifact@v4
+          set -euo pipefail
+          PROJECT_DIR=""
+
+          # Se existir um ZIP do projeto no repositório, usa-o como fonte principal.
+          while IFS= read -r -d '' archive; do
+            if unzip -Z1 "$archive" | grep -qE '(^|/)settings\.gradle(\.kts)?$'; then
+              DEST="$RUNNER_TEMP/codeinjector-source"
+              mkdir -p "$DEST"
+              unzip -oq "$archive" -d "$DEST"
+              PROJECT_DIR="$(find "$DEST" -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit | xargs -r dirname)"
+              if [[ -n "$PROJECT_DIR" ]]; then
+                echo "Projeto encontrado no ZIP: $archive"
+                break
+              fi
+            fi
+          done < <(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -iname '*.zip' -print0)
+
+          # Fallback: compila os arquivos já extraídos no repositório.
+          if [[ -z "$PROJECT_DIR" ]]; then
+            if [[ -f "$GITHUB_WORKSPACE/settings.gradle.kts" || -f "$GITHUB_WORKSPACE/settings.gradle" ]]; then
+              PROJECT_DIR="$GITHUB_WORKSPACE"
+            else
+              echo "ERRO: não encontrei um ZIP com settings.gradle(.kts), nem um projeto Gradle na raiz." >&2
+              echo "Envie o ZIP do CodeInjector para o repositório e confirme que ele contém o projeto Android." >&2
+              exit 1
+            fi
+          fi
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Diretório que será compilado: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Compilar APK Debug
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
         with:
           name: CodeInjector-debug-apk
-          path: CodeInjector/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.source.outputs.project_dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
