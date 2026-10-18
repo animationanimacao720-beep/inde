@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           PROJECT_DIR=""
 
-          # Se existir um ZIP do projeto no repositório, usa-o como fonte principal.
+          # Usa o ZIP do projeto como fonte principal, se existir.
           while IFS= read -r -d '' archive; do
             if unzip -Z1 "$archive" | grep -qE '(^|/)settings\.gradle(\.kts)?$'; then
               DEST="$RUNNER_TEMP/codeinjector-source"
@@ -56,13 +56,13 @@ jobs:
             fi
           done < <(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -iname '*.zip' -print0)
 
-          # Fallback: compila os arquivos já extraídos no repositório.
+          # Alternativa: compila os arquivos já extraídos no repositório.
           if [[ -z "$PROJECT_DIR" ]]; then
             if [[ -f "$GITHUB_WORKSPACE/settings.gradle.kts" || -f "$GITHUB_WORKSPACE/settings.gradle" ]]; then
               PROJECT_DIR="$GITHUB_WORKSPACE"
             else
               echo "ERRO: não encontrei um ZIP com settings.gradle(.kts), nem um projeto Gradle na raiz." >&2
-              echo "Envie o ZIP do CodeInjector para o repositório e confirme que ele contém o projeto Android." >&2
+              echo "Confirme que o ZIP do CodeInjector contém o projeto Android." >&2
               exit 1
             fi
           fi
@@ -75,6 +75,49 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      # Remove o serviço de acessibilidade da cópia extraída antes de compilar.
+      # O ZIP original no repositório não é alterado.
+      - name: Remover serviço de acessibilidade
+        env:
+          PROJECT_DIR: ${{ steps.source.outputs.project_dir }}
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          root = Path(os.environ["PROJECT_DIR"])
+          manifest = root / "app/src/main/AndroidManifest.xml"
+          android_ns = "{http://schemas.android.com/apk/res/android}"
+
+          if manifest.exists():
+              tree = ET.parse(manifest)
+              app = tree.getroot().find("application")
+              changed = False
+
+              if app is not None:
+                  for service in list(app.findall("service")):
+                      actions = [
+                          action.get(android_ns + "name")
+                          for intent_filter in service.findall("intent-filter")
+                          for action in intent_filter.findall("action")
+                      ]
+                      if "android.accessibilityservice.AccessibilityService" in actions:
+                          app.remove(service)
+                          changed = True
+                          print("Declaração do serviço de acessibilidade removida.")
+
+              if changed:
+                  tree.write(manifest, encoding="utf-8", xml_declaration=True)
+              else:
+                  print("Nenhuma declaração de serviço de acessibilidade encontrada.")
+
+          config = root / "app/src/main/res/xml/accessibility_service_config.xml"
+          if config.exists():
+              config.unlink()
+              print("Arquivo accessibility_service_config.xml removido.")
+          PY
 
       - name: Compilar APK Debug
         working-directory: ${{ steps.source.outputs.project_dir }}
